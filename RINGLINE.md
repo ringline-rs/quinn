@@ -37,8 +37,9 @@ the `platform-verifier` feature.
   tag out of the branch's history, so the next merge uses the previous
   upstream tag as its base and conflicts on everything upstream changed
   since.
-- Only `ringline-quic-proto` is published from this repository. `quinn` and
-  `quinn-udp` build here against it but are not published.
+- Only `ringline-quic-proto` is published from this repository. `quinn`
+  builds here against it. `quinn`, `quinn-udp` and the tools are not
+  published.
 
 ## Using it
 

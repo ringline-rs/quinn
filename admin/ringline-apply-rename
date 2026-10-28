@@ -19,10 +19,13 @@ The changes:
   `rustls`, so `rustls::` paths are unchanged.
 - docs/book, whose example uses the platform verifier, is not a workspace
   member.
-- Two doc links to `ClientConfig::with_platform_verifier` are removed.
+- The doc link to `ClientConfig::with_platform_verifier` is removed.
 - Every doctest that names `quinn_proto` aliases the library under that name.
-- The workflows name the package `ringline-quic-proto` and do not enable
-  `platform-verifier`.
+- The workflows name the package `ringline-quic-proto` and its wasm file, do
+  not enable `platform-verifier`, and run the feature powerset on quinn and
+  quinn-udp, which `--ignore-private` would skip now they are unpublished.
+- An upstream rustls requirement newer than RINGLINE_TLS_CONTAINS stops the
+  script with an error.
 
 Usage: admin/ringline-apply-rename [--version X.Y.Z]
 """
@@ -33,6 +36,10 @@ import re
 import sys
 
 RINGLINE_TLS = 'rustls = { package = "ringline-tls", version = "0.1", default-features = false, features = ["std"] }'
+# The newest upstream rustls the RINGLINE_TLS requirement contains: ringline-tls
+# 0.1.0 is rustls 0.23.46. An upstream quinn that requires a newer rustls
+# needs a ringline-tls release containing it and a raised requirement, by hand.
+RINGLINE_TLS_CONTAINS = (0, 23, 46)
 DOCTEST_ALIAS = "# extern crate ringline_quic_proto as quinn_proto;"
 WORKFLOWS_DIR = ".github/workflows"
 PLATFORM_CHECK_CFG = "'cfg(feature, values(\"platform-verifier\"))'"
@@ -78,7 +85,9 @@ def proto_manifest(version):
         head = head.rstrip("\n") + '\n\n[lib]\nname = "ringline_quic_proto"\n'
     rest = remove_lines(rest, r'^platform-verifier = \["dep:rustls-platform-verifier"\]\n')
     rest = remove_lines(rest, r"^rustls-platform-verifier = \{ workspace = true, optional = true \}\n")
-    rest = rest.replace('"platform-verifier", ', "")
+    rest = remove_lines(rest, r"^# Provides `ClientConfig::with_platform_verifier\(\)` convenience method\n")
+    rest = re.sub(r'"platform-verifier",\s*', "", rest)
+    rest = re.sub(r',\s*"platform-verifier"(?=\s*\])', "", rest)
     if PLATFORM_CHECK_CFG not in rest:
         rest = rest.replace(
             "unexpected_cfgs = { level = \"warn\", check-cfg = ['cfg(fuzzing)'] }",
@@ -86,6 +95,8 @@ def proto_manifest(version):
         )
         if PLATFORM_CHECK_CFG not in rest:
             sys.exit(f"{p}: could not declare the removed platform-verifier feature in check-cfg")
+    if "platform-verifier" in rest.replace(PLATFORM_CHECK_CFG, ""):
+        sys.exit(f"{p}: platform-verifier is still named after the rename")
     write(p, head + sep + rest)
 
 
@@ -126,6 +137,13 @@ def quinn_manifests():
 def root_manifest():
     p = "Cargo.toml"
     s = read(p)
+    m = re.search(r'^rustls = \{ version = "(\d+)\.(\d+)\.(\d+)"', s, re.M)
+    if m and tuple(int(x) for x in m.groups()) > RINGLINE_TLS_CONTAINS:
+        sys.exit(
+            f"Cargo.toml: upstream requires rustls {'.'.join(m.groups())}, newer than the rustls "
+            f"{'.'.join(map(str, RINGLINE_TLS_CONTAINS))} that ringline-tls 0.1.0 contains; raise "
+            "the ringline-tls requirement and RINGLINE_TLS_CONTAINS by hand"
+        )
     s = re.sub(r"^rustls = \{ version = [^\n]*\}$", RINGLINE_TLS, s, count=1, flags=re.M)
     if RINGLINE_TLS not in s:
         sys.exit("Cargo.toml: no workspace rustls dependency")
@@ -193,6 +211,19 @@ def workflows():
         s = read(p)
         s = re.sub(r"(-p|--package) quinn-proto(?=[\s)]|$)", r"\1 ringline-quic-proto", s, flags=re.M)
         s = s.replace("--features=log,platform-verifier,", "--features=log,")
+        s = s.replace("deps/quinn_proto-*.wasm", "deps/ringline_quic_proto-*.wasm")
+        # A glob that matches nothing would make the `!` check below pass.
+        wasm = "target/wasm32-unknown-unknown/debug/deps/ringline_quic_proto-*.wasm"
+        check = f"          ! wasm-tools print --skeleton {wasm}"
+        if check in s and f"          ls {wasm} >/dev/null\n" not in s:
+            s = s.replace(check, f"          ls {wasm} >/dev/null\n" + check, 1)
+        s = s.replace("Ensure no 'import \"env\"' in quinn_proto Wasm", "Ensure no 'import \"env\"' in ringline_quic_proto Wasm")
+        # quinn and quinn-udp are not published from this fork, and
+        # --ignore-private would skip them.
+        s = s.replace(
+            "--no-dev-deps --ignore-private --skip",
+            "--no-dev-deps --workspace --exclude bench --exclude perf --exclude fuzz --skip",
+        )
         write(p, s)
 
 

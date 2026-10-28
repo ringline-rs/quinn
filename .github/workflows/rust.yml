@@ -146,9 +146,10 @@ jobs:
 
       # If the Wasm file contains any 'import "env"' declarations, then
       # some non-Wasm-compatible code made it into the final code.
-      - name: Ensure no 'import "env"' in quinn_proto Wasm
+      - name: Ensure no 'import "env"' in ringline_quic_proto Wasm
         run: |
-          ! wasm-tools print --skeleton target/wasm32-unknown-unknown/debug/deps/quinn_proto-*.wasm | grep 'import "env"'
+          ls target/wasm32-unknown-unknown/debug/deps/ringline_quic_proto-*.wasm >/dev/null
+          ! wasm-tools print --skeleton target/wasm32-unknown-unknown/debug/deps/ringline_quic_proto-*.wasm | grep 'import "env"'
       - name: Ensure no 'import "env"' in quinn Wasm
         run: |
           ! wasm-tools print --skeleton target/wasm32-unknown-unknown/debug/quinn.wasm | grep 'import "env"'
@@ -272,4 +273,4 @@ jobs:
       - uses: actions/checkout@v5
       - uses: dtolnay/rust-toolchain@stable
       - uses: taiki-e/install-action@cargo-hack
-      - run: cargo hack check --feature-powerset --depth 3 --optional-deps --no-dev-deps --ignore-private --skip "${{env.SKIP_FEATURES}}"
+      - run: cargo hack check --feature-powerset --depth 3 --optional-deps --no-dev-deps --workspace --exclude bench --exclude perf --exclude fuzz --skip "${{env.SKIP_FEATURES}}"

@@ -3,11 +3,11 @@
 quinn-proto release this fork contains.
 
 `cargo audit` matches advisories by crate name, so it never reports
-`ringline-quic-proto`. This script audits a lockfile that lists `quinn-proto`
-at the upstream version named in RINGLINE.md (`Upstream:
+`ringline-quic-proto`. This script audits a lockfile that lists
+`quinn-proto` at the upstream version named in RINGLINE.md (`Upstream:
 quinn-proto-X.Y.Z`), and a control lockfile at quinn-proto 0.11.13, which
-has known advisories. A control that
-reports nothing means the check itself is broken.
+has known advisories. A control that reports nothing means the check
+itself is broken.
 
 Exit status: 0 no advisory; 1 an advisory affects the merged upstream
 version (the IDs are printed); 2 the check is broken.

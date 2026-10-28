@@ -1,6 +1,7 @@
 # Publishes ringline-quic-proto to crates.io when a `vX.Y.Z` tag is pushed
 # (the fork's own versions; upstream's tags are `quinn-proto-X.Y.Z` and
-# similar), and creates a GitHub release whose notes name the upstream tag. Needs the CARGO_REGISTRY_TOKEN
+# similar), and creates a GitHub release whose notes name the upstream
+# tag. Needs the CARGO_REGISTRY_TOKEN
 # secret.
 name: ringline release
 

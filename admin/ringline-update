@@ -45,7 +45,6 @@ import tomllib
 
 UPSTREAM = "https://github.com/quinn-rs/quinn.git"
 TAG_PREFIX = "quinn-proto-"
-UPSTREAM_CRATE = "quinn-proto"
 FORK_CRATE = "ringline-quic-proto"
 VERSION_FILE = "quinn-proto/Cargo.toml"
 COMPARE_URL = "https://github.com/quinn-rs/quinn/compare/"
