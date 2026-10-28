@@ -86,6 +86,7 @@ def proto_manifest(version):
     rest = remove_lines(rest, r'^platform-verifier = \["dep:rustls-platform-verifier"\]\n')
     rest = remove_lines(rest, r"^rustls-platform-verifier = \{ workspace = true, optional = true \}\n")
     rest = remove_lines(rest, r"^# Provides `ClientConfig::with_platform_verifier\(\)` convenience method\n")
+    rest = remove_lines(rest, r"^# Enable rustls ring provider and direct ring usage\n(?=(?:#[^\n]*\n)*log = )")
     rest = re.sub(r'"platform-verifier",\s*', "", rest)
     rest = re.sub(r',\s*"platform-verifier"(?=\s*\])', "", rest)
     if PLATFORM_CHECK_CFG not in rest:
@@ -137,13 +138,21 @@ def quinn_manifests():
 def root_manifest():
     p = "Cargo.toml"
     s = read(p)
-    m = re.search(r'^rustls = \{ version = "(\d+)\.(\d+)\.(\d+)"', s, re.M)
-    if m and tuple(int(x) for x in m.groups()) > RINGLINE_TLS_CONTAINS:
-        sys.exit(
-            f"Cargo.toml: upstream requires rustls {'.'.join(m.groups())}, newer than the rustls "
-            f"{'.'.join(map(str, RINGLINE_TLS_CONTAINS))} that ringline-tls 0.1.0 contains; raise "
-            "the ringline-tls requirement and RINGLINE_TLS_CONTAINS by hand"
-        )
+    m = re.search(r'^rustls = \{ version = "([^"]*)"', s, re.M)
+    if m:
+        v = re.fullmatch(r"\^?(\d+)(?:\.(\d+))?(?:\.(\d+))?", m.group(1).strip())
+        if not v:
+            sys.exit(
+                f"Cargo.toml: cannot read upstream's rustls requirement {m.group(1)!r}; "
+                "compare it with ringline-tls by hand"
+            )
+        floor = tuple(int(x or 0) for x in v.groups())
+        if floor[:2] != RINGLINE_TLS_CONTAINS[:2] or floor > RINGLINE_TLS_CONTAINS:
+            sys.exit(
+                f"Cargo.toml: upstream requires rustls {m.group(1)}, which the rustls "
+                f"{'.'.join(map(str, RINGLINE_TLS_CONTAINS))} in ringline-tls 0.1.0 does not "
+                "satisfy; raise the ringline-tls requirement and RINGLINE_TLS_CONTAINS by hand"
+            )
     s = re.sub(r"^rustls = \{ version = [^\n]*\}$", RINGLINE_TLS, s, count=1, flags=re.M)
     if RINGLINE_TLS not in s:
         sys.exit("Cargo.toml: no workspace rustls dependency")
@@ -225,6 +234,10 @@ def workflows():
             "--no-dev-deps --workspace --exclude bench --exclude perf --exclude fuzz --skip",
         )
         write(p, s)
+    rust = read(os.path.join(WORKFLOWS_DIR, "rust.yml"))
+    wasm = "target/wasm32-unknown-unknown/debug/deps/ringline_quic_proto-*.wasm"
+    if "--ignore-private" in rust or ("ringline_quic_proto-*.wasm" in rust and f"ls {wasm} >/dev/null" not in rust):
+        sys.exit(f"{WORKFLOWS_DIR}/rust.yml: the powerset or wasm-glob rewrite did not apply")
 
 
 def check_doctest_aliases():
