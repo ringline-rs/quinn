@@ -85,6 +85,7 @@ impl TransportConfig {
     /// idle timeout can result in permanently hung futures!
     ///
     /// ```
+    /// # extern crate ringline_quic_proto as quinn_proto;
     /// # use std::{convert::TryInto, time::Duration};
     /// # use quinn_proto::{TransportConfig, VarInt, VarIntBoundsExceeded};
     /// # fn main() -> Result<(), VarIntBoundsExceeded> {
@@ -326,6 +327,7 @@ impl TransportConfig {
     ///
     /// # Example
     /// ```
+    /// # extern crate ringline_quic_proto as quinn_proto;
     /// # use quinn_proto::*; use std::sync::Arc;
     /// let mut config = TransportConfig::default();
     /// config.congestion_controller_factory(Arc::new(congestion::NewRenoConfig::default()));
@@ -760,6 +762,7 @@ impl Default for MtuDiscoveryConfig {
 /// constructed by converting directly from `VarInt`, or using `TryFrom<Duration>`.
 ///
 /// ```
+/// # extern crate ringline_quic_proto as quinn_proto;
 /// # use std::{convert::TryFrom, time::Duration};
 /// # use quinn_proto::{IdleTimeout, VarIntBoundsExceeded, VarInt};
 /// # fn main() -> Result<(), VarIntBoundsExceeded> {

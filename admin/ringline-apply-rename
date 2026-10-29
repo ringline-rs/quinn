@@ -1,0 +1,275 @@
+#!/usr/bin/env python3
+"""Apply the fork's mechanical changes to an upstream quinn tree.
+
+Run from the repository root. Idempotent: running it on a tree that already
+has the changes leaves it unchanged. admin/ringline-update runs it on the old
+and new upstream trees before a three-way merge of each conflicted file, and
+on the merged tree before committing.
+
+The changes:
+- quinn-proto/Cargo.toml: package `ringline-quic-proto` at the fork's
+  version, library `ringline_quic_proto`, fork metadata, RINGLINE.md as the
+  README; the `platform-verifier` feature and its `rustls-platform-verifier`
+  dependency are removed (that crate implements upstream rustls's traits,
+  not ringline-tls's).
+- quinn/Cargo.toml: `proto` names `ringline-quic-proto`; `platform-verifier`
+  is removed from its features; quinn and quinn-udp are not published.
+- perf and fuzz depend on `ringline-quic-proto` under their existing keys.
+- The workspace `rustls` dependency is `ringline-tls`, under the key
+  `rustls`, so `rustls::` paths are unchanged.
+- docs/book, whose example uses the platform verifier, is not a workspace
+  member.
+- The doc link to `ClientConfig::with_platform_verifier` is removed.
+- Every doctest that names `quinn_proto` aliases the library under that name.
+- The workflows name the package `ringline-quic-proto` and its wasm file, do
+  not enable `platform-verifier`, and run the feature powerset on quinn and
+  quinn-udp, which `--ignore-private` would skip now they are unpublished.
+- An upstream rustls requirement newer than RINGLINE_TLS_CONTAINS stops the
+  script with an error.
+
+Usage: admin/ringline-apply-rename [--version X.Y.Z]
+"""
+
+import argparse
+import os
+import re
+import sys
+
+RINGLINE_TLS = 'rustls = { package = "ringline-tls", version = "0.1", default-features = false, features = ["std"] }'
+# The newest upstream rustls the RINGLINE_TLS requirement contains: ringline-tls
+# 0.1.0 is rustls 0.23.46. An upstream quinn that requires a newer rustls
+# needs a ringline-tls release containing it and a raised requirement, by hand.
+RINGLINE_TLS_CONTAINS = (0, 23, 46)
+DOCTEST_ALIAS = "# extern crate ringline_quic_proto as quinn_proto;"
+WORKFLOWS_DIR = ".github/workflows"
+PLATFORM_CHECK_CFG = "'cfg(feature, values(\"platform-verifier\"))'"
+
+
+def read(p):
+    with open(p) as f:
+        return f.read()
+
+
+def write(p, s):
+    if read(p) != s:
+        with open(p, "w") as f:
+            f.write(s)
+
+
+def set_key(text, key, value):
+    pat = re.compile(rf"^{re.escape(key)}(\.workspace)? = .*$", re.M)
+    line = f"{key} = {value}"
+    if pat.search(text):
+        return pat.sub(line, text, count=1)
+    return text.rstrip("\n") + "\n" + line + "\n"
+
+
+def remove_lines(text, pattern):
+    return re.sub(pattern, "", text, flags=re.M)
+
+
+def proto_manifest(version):
+    p = "quinn-proto/Cargo.toml"
+    s = read(p)
+    head, sep, rest = s.partition("\n[features]")
+    if not sep:
+        sys.exit(f"{p}: no [features] section")
+    head = set_key(head, "name", '"ringline-quic-proto"')
+    if version:
+        head = set_key(head, "version", f'"{version}"')
+    head = set_key(head, "description", '"A fork of quinn-proto 0.11 maintained for ringline."')
+    head = set_key(head, "repository", '"https://github.com/ringline-rs/quinn"')
+    head = set_key(head, "homepage", '"https://github.com/ringline-rs/quinn"')
+    head = set_key(head, "readme", '"../RINGLINE.md"')
+    if "\n[lib]\n" not in head:
+        head = head.rstrip("\n") + '\n\n[lib]\nname = "ringline_quic_proto"\n'
+    rest = remove_lines(rest, r'^platform-verifier = \["dep:rustls-platform-verifier"\]\n')
+    rest = remove_lines(rest, r"^rustls-platform-verifier = \{ workspace = true, optional = true \}\n")
+    rest = remove_lines(rest, r"^# Provides `ClientConfig::with_platform_verifier\(\)` convenience method\n")
+    rest = remove_lines(rest, r"^# Enable rustls ring provider and direct ring usage\n(?=(?:#[^\n]*\n)*log = )")
+    rest = re.sub(r'"platform-verifier",\s*', "", rest)
+    rest = re.sub(r',\s*"platform-verifier"(?=\s*\])', "", rest)
+    if PLATFORM_CHECK_CFG not in rest:
+        rest = rest.replace(
+            "unexpected_cfgs = { level = \"warn\", check-cfg = ['cfg(fuzzing)'] }",
+            "unexpected_cfgs = { level = \"warn\", check-cfg = ['cfg(fuzzing)', " + PLATFORM_CHECK_CFG + "] }",
+        )
+        if PLATFORM_CHECK_CFG not in rest:
+            sys.exit(f"{p}: could not declare the removed platform-verifier feature in check-cfg")
+    if "platform-verifier" in rest.replace(PLATFORM_CHECK_CFG, ""):
+        sys.exit(f"{p}: platform-verifier is still named after the rename")
+    write(p, head + sep + rest)
+
+
+def quinn_manifests():
+    p = "quinn/Cargo.toml"
+    s = read(p)
+    s = re.sub(
+        r'^proto = \{ package = "quinn-proto", path = "\.\./quinn-proto", version = "[^"]*",',
+        'proto = { package = "ringline-quic-proto", path = "../quinn-proto", version = "0.1.0",',
+        s,
+        flags=re.M,
+    )
+    s = s.replace('"log", "platform-verifier", ', '"log", ')
+    s = remove_lines(s, r'^platform-verifier = \["proto/platform-verifier"\]\n')
+    s = remove_lines(s, r"^# Provides `ClientConfig::with_platform_verifier\(\)` convenience method\n")
+    for m in ("quinn/Cargo.toml", "quinn-udp/Cargo.toml"):
+        t = s if m == p else read(m)
+        if not re.search(r"^publish = false$", t, re.M):
+            t = re.sub(r'^(version = "[^"]*")$', r"\1\npublish = false", t, count=1, flags=re.M)
+        if m == p:
+            s = t
+        else:
+            write(m, t)
+    write(p, s)
+    for p in ("perf/Cargo.toml",):
+        if os.path.exists(p):
+            write(p, read(p).replace(
+                'quinn-proto = { path = "../quinn-proto" }',
+                'quinn-proto = { package = "ringline-quic-proto", path = "../quinn-proto" }',
+            ))
+    if os.path.exists("fuzz/Cargo.toml"):
+        write("fuzz/Cargo.toml", read("fuzz/Cargo.toml").replace(
+            'path = "../quinn-proto"\npackage = "quinn-proto"',
+            'path = "../quinn-proto"\npackage = "ringline-quic-proto"',
+        ))
+
+
+def root_manifest():
+    p = "Cargo.toml"
+    s = read(p)
+    m = re.search(r'^rustls = \{ version = "([^"]*)"', s, re.M)
+    if m:
+        v = re.fullmatch(r"\^?(\d+)(?:\.(\d+))?(?:\.(\d+))?", m.group(1).strip())
+        if not v:
+            sys.exit(
+                f"Cargo.toml: cannot read upstream's rustls requirement {m.group(1)!r}; "
+                "compare it with ringline-tls by hand"
+            )
+        floor = tuple(int(x or 0) for x in v.groups())
+        if floor[:2] != RINGLINE_TLS_CONTAINS[:2] or floor > RINGLINE_TLS_CONTAINS:
+            sys.exit(
+                f"Cargo.toml: upstream requires rustls {m.group(1)}, which the rustls "
+                f"{'.'.join(map(str, RINGLINE_TLS_CONTAINS))} in ringline-tls 0.1.0 does not "
+                "satisfy; raise the ringline-tls requirement and RINGLINE_TLS_CONTAINS by hand"
+            )
+    s = re.sub(r"^rustls = \{ version = [^\n]*\}$", RINGLINE_TLS, s, count=1, flags=re.M)
+    if RINGLINE_TLS not in s:
+        sys.exit("Cargo.toml: no workspace rustls dependency")
+    s = s.replace(', "docs/book"]', "]", 1)
+    if "\nexclude = " not in s:
+        s = s.replace("resolver = \"2\"\n", "resolver = \"2\"\n# ringline: the book's example uses the platform verifier, which this fork\n# removes.\nexclude = [\"docs/book\"]\n", 1)
+    write(p, s)
+
+
+def doc_links():
+    p = "quinn-proto/src/crypto/rustls.rs"
+    s = read(p)
+    s = s.replace(
+        "/// [`ClientConfig::with_root_certificates()`][root_certs] and "
+        "[`ClientConfig::with_platform_verifier()`][platform].",
+        "/// [`ClientConfig::with_root_certificates()`][root_certs].",
+    )
+    s = s.replace("/// [platform]: crate::config::ClientConfig::with_platform_verifier()\n", "")
+    write(p, s)
+
+
+def alias_doctests():
+    fence = re.compile(r"^(\s*(?://[/!])\s?)```(.*)$")
+    close = re.compile(r"^\s*//[/!]\s?```\s*$")
+    for root, _, files in os.walk("quinn-proto/src"):
+        for f in files:
+            if not f.endswith(".rs"):
+                continue
+            p = os.path.join(root, f)
+            lines = read(p).split("\n")
+            out, i = [], 0
+            while i < len(lines):
+                m = fence.match(lines[i])
+                if not m:
+                    out.append(lines[i])
+                    i += 1
+                    continue
+                prefix = m.group(1)
+                langs = [x.strip() for x in m.group(2).split(",") if x.strip()]
+                j = i + 1
+                while j < len(lines) and not close.match(lines[j]):
+                    j += 1
+                body = "\n".join(lines[i + 1:j])
+                rust = all(
+                    x in ("rust", "no_run", "should_panic", "compile_fail") or x.startswith("edition")
+                    for x in langs
+                )
+                out.append(lines[i])
+                if rust and re.search(r"\bquinn_proto\b", body) and DOCTEST_ALIAS not in body:
+                    out.append(prefix + DOCTEST_ALIAS)
+                # Copy the block through its closing fence, which must not be
+                # read as an opening one.
+                out.extend(lines[i + 1:j + 1])
+                i = j + 1
+            write(p, "\n".join(out))
+
+
+def workflows():
+    if not os.path.isdir(WORKFLOWS_DIR):
+        return
+    for f in sorted(os.listdir(WORKFLOWS_DIR)):
+        if not f.endswith(".yml"):
+            continue
+        p = os.path.join(WORKFLOWS_DIR, f)
+        s = read(p)
+        s = re.sub(r"(-p|--package) quinn-proto(?=[\s)]|$)", r"\1 ringline-quic-proto", s, flags=re.M)
+        s = s.replace("--features=log,platform-verifier,", "--features=log,")
+        s = s.replace("deps/quinn_proto-*.wasm", "deps/ringline_quic_proto-*.wasm")
+        # A glob that matches nothing would make the `!` check below pass.
+        wasm = "target/wasm32-unknown-unknown/debug/deps/ringline_quic_proto-*.wasm"
+        check = f"          ! wasm-tools print --skeleton {wasm}"
+        if check in s and f"          ls {wasm} >/dev/null\n" not in s:
+            s = s.replace(check, f"          ls {wasm} >/dev/null\n" + check, 1)
+        s = s.replace("Ensure no 'import \"env\"' in quinn_proto Wasm", "Ensure no 'import \"env\"' in ringline_quic_proto Wasm")
+        # quinn and quinn-udp are not published from this fork, and
+        # --ignore-private would skip them.
+        s = s.replace(
+            "--no-dev-deps --ignore-private --skip",
+            "--no-dev-deps --workspace --exclude bench --exclude perf --exclude fuzz --skip",
+        )
+        write(p, s)
+    rust = read(os.path.join(WORKFLOWS_DIR, "rust.yml"))
+    wasm = "target/wasm32-unknown-unknown/debug/deps/ringline_quic_proto-*.wasm"
+    if "--ignore-private" in rust or ("ringline_quic_proto-*.wasm" in rust and f"ls {wasm} >/dev/null" not in rust):
+        sys.exit(f"{WORKFLOWS_DIR}/rust.yml: the powerset or wasm-glob rewrite did not apply")
+
+
+def check_doctest_aliases():
+    fence = re.compile(r"^\s*//[/!]\s?```")
+    bad = []
+    for root, _, files in os.walk("quinn-proto/src"):
+        for f in files:
+            if not f.endswith(".rs"):
+                continue
+            p = os.path.join(root, f)
+            inside = False
+            for n, line in enumerate(read(p).split("\n"), 1):
+                if fence.match(line):
+                    inside = not inside
+                elif DOCTEST_ALIAS in line and not inside:
+                    bad.append(f"{p}:{n}")
+    if bad:
+        sys.exit("alias lines outside a code block:\n" + "\n".join(bad))
+
+
+def main():
+    ap = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    ap.add_argument("--version", help="set the ringline-quic-proto package version")
+    opts = ap.parse_args()
+    proto_manifest(opts.version)
+    quinn_manifests()
+    root_manifest()
+    doc_links()
+    alias_doctests()
+    workflows()
+    check_doctest_aliases()
+
+
+if __name__ == "__main__":
+    main()
